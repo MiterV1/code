@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/list"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -39,12 +40,47 @@ func checkSum(data []byte) (rt uint16) {
 	return ^rt
 }
 
+func showStatistics(host string, sent int, l *list.List) {
+	fmt.Println("")
+	//信息统计
+
+	var min, max, sum int
+	if l.Len() == 0 {
+		min, max, sum = 0, 0, 0
+	} else {
+		min, max, sum = l.Front().Value.(int), l.Front().Value.(int), 0
+	}
+
+	/* 链表遍历 */
+	for v := l.Front(); v != nil; v = v.Next() {
+		val := v.Value.(int)
+		switch {
+		case val < min:
+			min = val
+		case val > max:
+			max = val
+		}
+		sum += val
+	}
+
+	recv, lost := l.Len(), sent-l.Len()
+	fmt.Printf("%s 的 Ping 统计信息：\n", host)
+	fmt.Printf("数据包：已发送 = %d，已接收 = %d，丢失 = %d (%.1f%% 丢失)\n", sent, recv, lost, float32(lost)/float32(sent)*100)
+	fmt.Printf("往返行程的估计时间(以毫秒为单位)：\n")
+	fmt.Printf("最短 = %dms，最长 = %dms，平均 = %.0fms\n", min, max, float32(sum)/float32(recv))
+}
+
 func ping(domain string, count int) {
-	laddr := net.IPAddr{IP: net.ParseIP("0.0.0.0")}
-	raddr, _ := net.ResolveIPAddr("ip", domain)
+	sip := net.IPAddr{IP: net.ParseIP("0.0.0.0")}
+	dip, err := net.ResolveIPAddr("ip", domain)
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
 
 	/* 构造icmp包 */
-	conn, err := net.DialIP("ip4:icmp", &laddr, raddr)
+	fmt.Printf("正在 Ping %s [%s] 具有 %d 字节的数据:\n", domain, dip.String(), 32)
+	conn, err := net.DialIP("ip4:icmp", &sip, dip)
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -57,7 +93,9 @@ func ping(domain string, count int) {
 	b := buffer.Bytes()
 	binary.BigEndian.PutUint16(b[2:], checkSum(b))
 
+	sent := 0
 	recv := make([]byte, 1500)
+	statistic := list.New() /* 使用链表存储每次的duration值 */
 	for i := 0; i < count; i++ {
 		var err error
 
@@ -67,6 +105,7 @@ func ping(domain string, count int) {
 			time.Sleep(time.Second)
 			continue
 		}
+		sent++
 
 		tStart := time.Now()
 		conn.SetReadDeadline((time.Now().Add(time.Second * 5))) // 5s内未接收到，则认为超时
@@ -77,16 +116,19 @@ func ping(domain string, count int) {
 		}
 		tEnd := time.Now()
 
-		tDuration := tEnd.Sub(tStart).Nanoseconds() / 1e6 // 毫秒计算
-		fmt.Printf("来自 %s 的回复: 时间 = %dms\n", raddr.String(), tDuration)
+		tDuration := int(tEnd.Sub(tStart).Nanoseconds() / 1e6) // 毫秒计算
+		fmt.Printf("来自 %s 的回复: 字节=%d 时间 = %dms TTL=%d\n", dip.String(), 32, tDuration, 64)
+		statistic.PushBack(tDuration)
 
 		time.Sleep(time.Second)
 	}
+
+	showStatistics(dip.String(), sent, statistic)
 }
 
 func usage() {
 	fmt.Printf("./a.out domain | times\n")
-	fmt.Printf("Example: ./a.out www.google.com 4\n")
+	fmt.Printf("Example: ./a.out www.google.com 2\n")
 }
 
 func main() {
